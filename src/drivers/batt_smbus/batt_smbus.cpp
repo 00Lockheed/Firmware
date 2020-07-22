@@ -56,7 +56,19 @@ BATT_SMBUS::BATT_SMBUS(I2CSPIBusOption bus_option, const int bus, SMBus *interfa
 	_batt_topic = orb_advertise(ORB_ID(battery_status), &new_report);
 
 	int battsource = 1;
+	int batt_device_type = (int)SMBUS_DEVICE_TYPE::UNDEFINED;
 	param_set((param_t)(px4::params::BAT_SOURCE), &battsource);
+	param_get((param_t)(px4::params::BAT_MODEL), &batt_device_type);
+
+
+	//TODO: probe the device and autodetect its type
+	if ((SMBUS_DEVICE_TYPE)batt_device_type == SMBUS_DEVICE_TYPE::BQ40Z80) {
+		_device_type = SMBUS_DEVICE_TYPE::BQ40Z80;
+
+	} else {
+		//default
+		_device_type = SMBUS_DEVICE_TYPE::BQ40Z50;
+	}
 
 	_interface->init();
 	// unseal() here to allow an external config script to write to protected flash.
@@ -160,10 +172,6 @@ void BATT_SMBUS::RunImpl()
 		new_report.serial_number = _serial_number;
 		new_report.max_cell_voltage_delta = _max_cell_voltage_delta;
 		new_report.cell_count = _cell_count;
-		new_report.voltage_cell_v[0] = _cell_voltages[0];
-		new_report.voltage_cell_v[1] = _cell_voltages[1];
-		new_report.voltage_cell_v[2] = _cell_voltages[2];
-		new_report.voltage_cell_v[3] = _cell_voltages[3];
 
 		// Check if max lifetime voltage delta is greater than allowed.
 		if (_lifetime_max_delta_cell_voltage > BATT_CELL_VOLTAGE_THRESHOLD_FAILED) {
@@ -182,6 +190,7 @@ void BATT_SMBUS::RunImpl()
 			new_report.warning = battery_status_s::BATTERY_WARNING_EMERGENCY;
 		}
 
+		new_report.interface_error = perf_event_count(_interface->_interface_errors);
 		orb_publish(ORB_ID(battery_status), _batt_topic, &new_report);
 
 		_last_report = new_report;
@@ -202,22 +211,57 @@ int BATT_SMBUS::get_cell_voltages()
 {
 	// Temporary variable for storing SMBUS reads.
 	uint16_t result = 0;
+	int ret = 0;
 
-	int ret = _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_1_VOLTAGE, result);
-	// Convert millivolts to volts.
-	_cell_voltages[0] = ((float)result) / 1000.0f;
+	if (_device_type == SMBUS_DEVICE_TYPE::BQ40Z50) {
+		ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_1_VOLTAGE, result);
+		// Convert millivolts to volts.
+		_cell_voltages[0] = ((float)result) / 1000.0f;
 
-	ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_2_VOLTAGE, result);
-	// Convert millivolts to volts.
-	_cell_voltages[1] = ((float)result) / 1000.0f;
+		ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_2_VOLTAGE, result);
+		// Convert millivolts to volts.
+		_cell_voltages[1] = ((float)result) / 1000.0f;
 
-	ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_3_VOLTAGE, result);
-	// Convert millivolts to volts.
-	_cell_voltages[2] = ((float)result) / 1000.0f;
+		ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_3_VOLTAGE, result);
+		// Convert millivolts to volts.
+		_cell_voltages[2] = ((float)result) / 1000.0f;
 
-	ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_4_VOLTAGE, result);
-	// Convert millivolts to volts.
-	_cell_voltages[3] = ((float)result) / 1000.0f;
+		ret |= _interface->read_word(BATT_SMBUS_BQ40Z50_CELL_4_VOLTAGE, result);
+		// Convert millivolts to volts.
+		_cell_voltages[3] = ((float)result) / 1000.0f;
+		_cell_voltages[4] = 0;
+		_cell_voltages[5] = 0;
+		_cell_voltages[6] = 0;
+
+	} else if (_device_type == SMBUS_DEVICE_TYPE::BQ40Z80) {
+		uint8_t DAstatus1[32 + 2] = {}; // 32 bytes of data and 2 bytes of address
+
+		//TODO: need to consider if set voltages to 0? -1?
+		if (PX4_OK != manufacturer_read(BATT_SMBUS_DASTATUS1, DAstatus1, sizeof(DAstatus1))) {
+			return PX4_ERROR;
+		}
+
+		// Convert millivolts to volts.
+		_cell_voltages[0] = ((float)((DAstatus1[1] << 8) | DAstatus1[0]) / 1000.0f);
+		_cell_voltages[1] = ((float)((DAstatus1[3] << 8) | DAstatus1[2]) / 1000.0f);
+		_cell_voltages[2] = ((float)((DAstatus1[5] << 8) | DAstatus1[4]) / 1000.0f);
+		_cell_voltages[3] = ((float)((DAstatus1[7] << 8) | DAstatus1[6]) / 1000.0f);
+
+		_pack_power = ((float)((DAstatus1[29] << 8) | DAstatus1[28]) / 100.0f); //TODO: decide if both needed
+		_pack_average_power = ((float)((DAstatus1[31] << 8) | DAstatus1[30]) / 100.0f);
+
+		uint8_t DAstatus3[18 + 2] = {}; // 18 bytes of data and 2 bytes of address
+
+		//TODO: need to consider if set voltages to 0? -1?
+		if (PX4_OK != manufacturer_read(BATT_SMBUS_DASTATUS3, DAstatus3, sizeof(DAstatus3))) {
+			return PX4_ERROR;
+		}
+
+		_cell_voltages[4] = ((float)((DAstatus3[1] << 8) | DAstatus3[0]) / 1000.0f);
+		_cell_voltages[5] = ((float)((DAstatus3[7] << 8) | DAstatus3[6]) / 1000.0f);
+		_cell_voltages[6] = ((float)((DAstatus3[13] << 8) | DAstatus3[12]) / 1000.0f);
+
+	}
 
 	//Calculate max cell delta
 	_min_cell_voltage = _cell_voltages[0];
@@ -439,7 +483,14 @@ int BATT_SMBUS::lifetime_read_block_one()
 	}
 
 	//Get max cell voltage delta and convert from mV to V.
-	_lifetime_max_delta_cell_voltage = (float)(lifetime_block_one[17] << 8 | lifetime_block_one[16]) / 1000.0f;
+	if (_device_type == SMBUS_DEVICE_TYPE::BQ40Z50) {
+
+		_lifetime_max_delta_cell_voltage = (float)(lifetime_block_one[17] << 8 | lifetime_block_one[16]) / 1000.0f;
+
+	} else if (_device_type == SMBUS_DEVICE_TYPE::BQ40Z80) {
+
+		_lifetime_max_delta_cell_voltage = (float)(lifetime_block_one[29] << 8 | lifetime_block_one[28]) / 1000.0f;
+	}
 
 	PX4_INFO("Max Cell Delta: %4.2f", (double)_lifetime_max_delta_cell_voltage);
 

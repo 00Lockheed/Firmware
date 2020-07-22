@@ -35,7 +35,7 @@
  * @file batt_smbus.h
  *
  * Header for a battery monitor connected via SMBus (I2C).
- * Designed for BQ40Z50-R1/R2
+ * Designed for BQ40Z50-R1/R2 or BQ40Z80
  *
  * @author Jacob Dahl <dahl.jakejacob@gmail.com>
  * @author Alex Klimaj <alexklimaj@gmail.com>
@@ -117,6 +117,13 @@ using namespace time_literals;
 
 #define BATT_SMBUS_ENABLED_PROTECTIONS_A_DEFAULT        0xcf
 #define BATT_SMBUS_ENABLED_PROTECTIONS_A_CUV_DISABLED   0xce
+
+
+enum class SMBUS_DEVICE_TYPE {
+	UNDEFINED  = 0,
+	BQ40Z50    = 1,
+	BQ40Z80    = 2,
+};
 
 class BATT_SMBUS : public I2CSPIDriver<BATT_SMBUS>
 {
@@ -219,6 +226,8 @@ private:
 
 	SMBus *_interface;
 
+	SMBUS_DEVICE_TYPE _device_type{SMBUS_DEVICE_TYPE::UNDEFINED};
+
 	perf_counter_t _cycle{perf_alloc(PC_ELAPSED, "batt_smbus_cycle")};
 
 	static const uint8_t MAX_NUM_OF_CELLS = 7;
@@ -227,6 +236,9 @@ private:
 	float _max_cell_voltage_delta{0};
 
 	float _min_cell_voltage{0};
+
+	float _pack_power{0};
+	float _pack_average_power{0};
 
 	/** @param _last_report Last published report, used for test(). */
 	battery_status_s _last_report{};
